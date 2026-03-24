@@ -21,16 +21,26 @@ import numpy as np
 from funsearch.implementation import evaluator
 from funsearch.implementation import programs_database
 
+import openai
 
 class LLM:
   """Language model that predicts continuation of provided source code."""
 
   def __init__(self, samples_per_prompt: int) -> None:
     self._samples_per_prompt = samples_per_prompt
+    self.client = openai.OpenAI(base_url="https://api.bltcy.ai/v1",api_key="sk-KcOna1MllF2BWDRIeXpcHAY92TKvHox3KnfpXsBZHiydDD0n",timeout=120,)
 
   def _draw_sample(self, prompt: str) -> str:
     """Returns a predicted continuation of `prompt`."""
-    raise NotImplementedError('Must provide a language model.')
+    llm_response = self.client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+          {"role": "system", "content": "你是一个编程专家。根据用户提供的代码，对其中未完成的部分进行填充。只返回预测的代码，不要添加任何解释或注释。"},
+          {"role": "user", "content": prompt}],
+        max_tokens=2048,
+        temperature=0.7,
+    )
+    return llm_response.choices[0].message.content # type: ignore
 
   def draw_samples(self, prompt: str) -> Collection[str]:
     """Returns multiple predicted continuations of `prompt`."""

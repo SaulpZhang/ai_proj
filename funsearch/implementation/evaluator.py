@@ -17,6 +17,7 @@
 import ast
 from collections.abc import Sequence
 import copy
+import signal
 from typing import Any
 
 from funsearch.implementation import code_manipulation
@@ -96,8 +97,32 @@ class Sandbox:
       timeout_seconds: int,
   ) -> tuple[Any, bool]:
     """Returns `function_to_run(test_input)` and whether execution succeeded."""
-    raise NotImplementedError(
-        'Must provide a sandbox for executing untrusted code.')
+    namespace: dict[str, Any] = {}
+
+    class _TimeoutError(Exception):
+      pass
+
+    def _timeout_handler(signum: int, frame: Any) -> None:
+      del signum, frame
+      raise _TimeoutError()
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    try:
+      signal.signal(signal.SIGALRM, _timeout_handler)
+      signal.alarm(timeout_seconds)
+
+      exec(program, namespace)  # pylint: disable=exec-used
+      function = namespace.get(function_to_run)
+      if not callable(function):
+        return None, False
+
+      result = function(test_input)
+      return result, True
+    except Exception:
+      return None, False
+    finally:
+      signal.alarm(0)
+      signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _calls_ancestor(program: str, function_to_evolve: str) -> bool:
