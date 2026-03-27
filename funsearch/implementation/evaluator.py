@@ -23,6 +23,8 @@ from typing import Any
 from funsearch.implementation import code_manipulation
 from funsearch.implementation import programs_database
 
+import json
+
 
 class _FunctionLineVisitor(ast.NodeVisitor):
   """Visitor that finds the last line number of a function with a given name."""
@@ -175,6 +177,6 @@ class Evaluator:
           and test_output is not None):
         if not isinstance(test_output, (int, float)):
           raise ValueError('@function.run did not return an int/float score.')
-        scores_per_test[current_input] = test_output
+        scores_per_test[json.dumps(current_input)] = test_output
     if scores_per_test:
       self._database.register_program(new_function, island_id, scores_per_test)

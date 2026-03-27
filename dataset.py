@@ -46,6 +46,8 @@ opt_num_bins = {}
 for name, dataset in datasets.items():
   opt_num_bins[name] = l1_bound_dataset(dataset)
 
+def get_dataset():
+  return datasets
 
 def get_dataset_or3():
   return datasets['OR3']
