@@ -25,6 +25,9 @@ from funsearch.implementation import programs_database
 
 import json
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 class _FunctionLineVisitor(ast.NodeVisitor):
   """Visitor that finds the last line number of a function with a given name."""
@@ -171,12 +174,15 @@ class Evaluator:
 
     scores_per_test = {}
     for current_input in self._inputs:
+      logger.info("Starting run the code")
       test_output, runs_ok = self._sandbox.run(
           program, self._function_to_run, current_input, self._timeout_seconds)
       if (runs_ok and not _calls_ancestor(program, self._function_to_evolve)
           and test_output is not None):
         if not isinstance(test_output, (int, float)):
           raise ValueError('@function.run did not return an int/float score.')
+        logger.info("Code ran successfully, score: %s", test_output)
         scores_per_test[json.dumps(current_input)] = test_output
+      logger.info("Finished running the code")
     if scores_per_test:
       self._database.register_program(new_function, island_id, scores_per_test)

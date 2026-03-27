@@ -32,11 +32,23 @@ class LLM:
 
   def _draw_sample(self, prompt: str) -> str:
     """Returns a predicted continuation of `prompt`."""
+
+    system_prompt = """你是一位顶级算法与Python编程专家，专注于代码迭代优化。
+核心规则：
+1. 严格遵循用户提供的代码格式，仅生成新版本的目标函数，不修改原有代码结构；
+2. 必须输出完整可运行的函数体、明确的return返回值，保证代码语法100%正确；
+3. 仅在核心逻辑处添加极简注释，禁止冗余说明、无关文本和markdown格式；
+4. 保证生成的函数与原有版本的入参、出参格式完全一致，仅优化算法逻辑。"""
+
+    user_content = f"""下方代码中，方法名后缀数字越大代表版本越新。请基于现有代码，实现更高版本的新方法，严格遵循上面的规则。
+代码如下：
+{prompt}"""
+
     llm_response = self.client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o",
         messages=[
-          {"role": "system", "content": "你是一个编程专家。根据用户提供的代码，对其中未完成的部分进行填充。只返回预测的代码，不要添加任何解释或注释。"},
-          {"role": "user", "content": prompt}],
+          {"role": "system", "content": system_prompt},
+          {"role": "user", "content": user_content}],
         max_tokens=2048,
         temperature=0.7,
     )
