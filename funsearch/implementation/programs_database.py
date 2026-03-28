@@ -28,6 +28,9 @@ import scipy
 
 from funsearch.implementation import code_manipulation
 from funsearch.implementation import config as config_lib
+import record_wandb
+
+run = record_wandb.get_wandb_run()
 
 Signature = tuple[float, ...]
 ScoresPerTest = Mapping[Any, float]
@@ -169,6 +172,12 @@ class ProgramsDatabase:
       self._best_scores_per_test_per_island[island_id] = scores_per_test
       self._best_score_per_island[island_id] = score
       logging.info('Best score of island %d increased to %s', island_id, score)
+
+    run.log({
+        f'island_{island_id}_cluster_num': len(self._islands[island_id]._clusters),
+        f'island_{island_id}_simpson_index': _get_simpson_index(self._islands[island_id]._clusters),
+        f'island_{island_id}_best_score': self._best_score_per_island[island_id],
+    })
 
   def register_program(
       self,
@@ -344,3 +353,14 @@ class Cluster:
         max(self._lengths) + 1e-6)
     probabilities = _softmax(-normalized_lengths, temperature=1.0)
     return np.random.choice(self._programs, p=probabilities)
+
+
+
+def _get_simpson_index(cluster_duct: dict[Signature, Cluster]) -> float:
+  """Calculates the Simpson index of a program based on its test scores."""
+  all = sum([len(c._programs) for _, c in cluster_duct.items()])
+  if all == 0:
+    all = 1
+  p = [float(len(c._programs)) / all for _, c in cluster_duct.items()]
+  simpson_index  = sum([x**2 for x in p])
+  return simpson_index
