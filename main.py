@@ -11,12 +11,16 @@ logging.basicConfig(
 
 if __name__ == "__main__":
     run = record_wandb.get_wandb_run()
-    
-    with open("templete/bin_online.txt", "r") as f:
-        specification = f.read()
-    
-    or3 = dataset.get_dataset_or3()
 
-    logging.info("Starting funsearch...")
-    funsearch.main(specification=specification,inputs=[or3], config=config_lib.Config())
+    try:
+        with open("templete/bin_online.txt", "r") as f:
+            specification = f.read()
+
+        or3 = dataset.get_dataset_or3()
+
+        logging.info("Starting funsearch...")
+        funsearch.main(specification=specification, inputs=[or3], config=config_lib.Config())
+    finally:
+        if run is not None:
+            run.finish()
     

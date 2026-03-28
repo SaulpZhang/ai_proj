@@ -30,8 +30,6 @@ from funsearch.implementation import code_manipulation
 from funsearch.implementation import config as config_lib
 import record_wandb
 
-run = record_wandb.get_wandb_run()
-
 Signature = tuple[float, ...]
 ScoresPerTest = Mapping[Any, float]
 _PendingProgram = tuple[code_manipulation.Function, int | None, ScoresPerTest]
@@ -173,7 +171,7 @@ class ProgramsDatabase:
       self._best_score_per_island[island_id] = score
       logging.info('Best score of island %d increased to %s', island_id, score)
 
-    run.log({
+    record_wandb.log_metrics({
         f'island_{island_id}_cluster_num': len(self._islands[island_id]._clusters),
         f'island_{island_id}_simpson_index': _get_simpson_index(self._islands[island_id]._clusters),
         f'island_{island_id}_best_score': self._best_score_per_island[island_id],
