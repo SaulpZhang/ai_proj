@@ -90,7 +90,7 @@ class CodeEmbedder:
 			code: str,
 			pca_dim: int = 16,
 			reference_codes: Sequence[str] | None = None,
-	) -> tuple:
+	) -> np.ndarray:
 		"""Embeds `code` and returns a PCA-reduced vector of length `pca_dim`.
 
 		Args:
@@ -112,7 +112,7 @@ class CodeEmbedder:
 
 		stacked = np.vstack(vectors)
 		reduced = self._reduce_with_pca(stacked, out_dim=pca_dim)
-		return tuple(reduced[0])
+		return reduced[0]
 
 
 def embed_code_to_16d(
@@ -121,7 +121,7 @@ def embed_code_to_16d(
 		model: str = 'text-embedding-3-small',
 		base_url: str = "https://api.bltcy.ai/v1",
 		api_key: str = "sk-KcOna1MllF2BWDRIeXpcHAY92TKvHox3KnfpXsBZHiydDD0n",
-) -> tuple:
+) -> np.ndarray :
 	"""Convenience helper: code string -> embedding -> 16D vector."""
 	embedder = CodeEmbedder(
 			model=model,

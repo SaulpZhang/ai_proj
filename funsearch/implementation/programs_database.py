@@ -14,7 +14,7 @@
 # ==============================================================================
 
 """A programs database that implements the evolutionary algorithm."""
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 import copy
 import dataclasses
 import queue
@@ -28,6 +28,7 @@ import scipy
 
 from funsearch.implementation import code_manipulation
 from funsearch.implementation import config as config_lib
+from funsearch.implementation import code_embedding
 
 Signature = tuple[float, ...]
 ScoresPerTest = Mapping[Any, float]
@@ -54,9 +55,52 @@ def _reduce_score(scores_per_test: ScoresPerTest) -> float:
   return scores_per_test[list(scores_per_test.keys())[-1]]
 
 
-def _get_signature(scores_per_test: ScoresPerTest) -> Signature:
-  """Represents test scores as a canonical signature."""
-  return tuple(scores_per_test[k] for k in sorted(scores_per_test.keys()))
+def _get_signature(
+    program: code_manipulation.Function,
+    cluster_centers: Iterable[Signature],
+) -> Signature:
+  """Assigns a signature using L2-normalized cosine similarity.
+
+  Rules:
+    1) L2-normalize `embedding` and all cluster centers.
+    2) Compute cosine similarity with each center.
+    3) If max similarity > 0.8, return the most similar existing center.
+    4) Otherwise return `embedding` itself as a new cluster center.
+  """
+  embedding = code_embedding.embed_code_to_16d(program.body)
+  if embedding.ndim != 1:
+    raise ValueError('Embedding must be a 1D vector.')
+
+  embedding_norm = float(np.linalg.norm(embedding))
+  if embedding_norm <= 1e-12:
+    raise ValueError('Embedding norm must be non-zero.')
+  embedding = embedding / embedding_norm
+
+  centers = [np.asarray(center, dtype=np.float32) for center in cluster_centers]
+  if not centers:
+    return tuple(float(x) for x in embedding)
+
+  normalized_centers = []
+  for center in centers:
+    if center.ndim != 1:
+      raise ValueError('Each cluster center must be a 1D vector.')
+    center_norm = float(np.linalg.norm(center))
+    if center_norm <= 1e-12:
+      continue
+    normalized_centers.append(center / center_norm)
+
+  if not normalized_centers:
+    return tuple(float(x) for x in embedding)
+
+  similarities = np.array(
+      [float(np.dot(embedding, center)) for center in normalized_centers],
+      dtype=np.float32,
+  )
+  best_index = int(np.argmax(similarities))
+  best_similarity = float(similarities[best_index])
+  if best_similarity > 0.8:
+    return tuple(float(x) for x in normalized_centers[best_index])
+  return tuple(float(x) for x in embedding)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -243,7 +287,7 @@ class Island:
       scores_per_test: ScoresPerTest,
   ) -> None:
     """Stores a program on this island, in its appropriate cluster."""
-    signature = _get_signature(scores_per_test)
+    signature = _get_signature(program, self._clusters.keys())
     if signature not in self._clusters:
       score = _reduce_score(scores_per_test)
       self._clusters[signature] = Cluster(score, program)
