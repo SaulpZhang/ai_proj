@@ -20,6 +20,7 @@ import numpy as np
 
 from funsearch.implementation import evaluator
 from funsearch.implementation import programs_database
+from funsearch.implementation import code_manipulation
 
 import openai
 
@@ -33,16 +34,16 @@ class LLM:
   def _draw_sample(self, prompt: str) -> str:
     """Returns a predicted continuation of `prompt`."""
 
-    system_prompt = """你是一位顶级算法与Python编程专家，专注于代码迭代优化。
-核心规则：
-1. 严格遵循用户提供的代码格式，仅生成新版本的目标函数，不修改原有代码结构；
-2. 必须输出完整可运行的函数体、明确的return返回值，保证代码语法100%正确；
-3. 仅在核心逻辑处添加极简注释，禁止冗余说明、无关文本和markdown格式；
-4. 保证生成的函数与原有版本的入参、出参格式完全一致，仅优化算法逻辑。"""
+    system_prompt = "你是一位顶级算法与Python编程专家，专注于代码迭代优化。\
+    核心规则：\
+    1. 严格遵循用户提供的代码格式，仅生成新版本的目标函数，不修改原有代码结构；\
+    2. 必须输出完整可运行的函数体、明确的return返回值，保证代码语法100%正确；\
+    3. 仅在核心逻辑处添加极简注释，禁止冗余说明、无关文本和markdown格式；\
+    4. 保证生成的函数与原有版本的入参、出参格式完全一致，仅优化算法逻辑; \
+    5. 必须返回可直接运行的代码，而不是将代码作为注释输出;\
+    6. ```python和```等markdown格式必须删除，禁止输出任何markdown格式。"
 
-    user_content = f"""下方代码中，方法名后缀数字越大代表版本越新。请基于现有代码，实现更高版本的新方法，严格遵循上面的规则。
-代码如下：
-{prompt}"""
+    user_content = f"下方代码中，方法名后缀数字越大代表版本越新。请基于现有代码，实现更高版本的新方法，严格遵循上面的规则。尽量不要生成功能相似的代码，而是要在算法逻辑上进行创新和优化。代码如下：{prompt}"
 
     llm_response = self.client.chat.completions.create(
         model="gpt-4o",
@@ -79,6 +80,16 @@ class Sampler:
       samples = self._llm.draw_samples(prompt.code)
       # This loop can be executed in parallel on remote evaluator machines.
       for sample in samples:
+        sample = self.remove_note(sample)
         chosen_evaluator = np.random.choice(self._evaluators)
         chosen_evaluator.analyse(
             sample, prompt.island_id, prompt.version_generated)
+  
+  def remove_note(self, sample: str) -> str:
+    try:
+      program = code_manipulation.text_to_program(sample)
+      return program.get_function(program.functions[0].name).body
+    except Exception:
+      # If the generated code cannot be parsed, we return it as is, and let the
+      # evaluator handle the syntax error.
+      return sample
