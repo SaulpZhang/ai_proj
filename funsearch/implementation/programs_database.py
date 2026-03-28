@@ -29,6 +29,10 @@ import scipy
 from funsearch.implementation import code_manipulation
 from funsearch.implementation import config as config_lib
 import record_wandb
+import json
+import my_logging
+
+savelogger = my_logging.get_file_logger(__name__)
 
 Signature = tuple[float, ...]
 ScoresPerTest = Mapping[Any, float]
@@ -199,6 +203,11 @@ class ProgramsDatabase:
       if (time.time() - self._last_reset_time > self._config.reset_period):
         self._last_reset_time = time.time()
         self.reset_islands()
+      
+    best_idx = np.argsort(self._best_score_per_island)[-1]
+    savelogger.info('--'*50)
+    savelogger.info(f'best island: {best_idx}, best score: {self._best_score_per_island[best_idx]}, best program: {self._best_program_per_island[best_idx]}')
+
 
   def reset_islands(self) -> None:
     """Resets the weaker half of islands."""
