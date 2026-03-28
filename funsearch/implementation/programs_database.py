@@ -17,6 +17,7 @@
 from collections.abc import Mapping, Sequence
 import copy
 import dataclasses
+import datetime
 import time
 from typing import Any
 
@@ -98,14 +99,112 @@ class ProgramsDatabase:
         [None] * config.num_islands)
     self._best_scores_per_test_per_island: list[ScoresPerTest | None] = (
         [None] * config.num_islands)
+    self._scores_log_path = config.scores_log_path
+    self._best_programs_log_path = config.best_programs_log_path
+    self._run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    self._logged_global_best_score: float | None = None
+
+    self._initialize_scores_log()
+    self._initialize_best_programs_log(function_to_evolve)
 
     self._last_reset_time: float = time.time()
+
+  def _initialize_scores_log(self) -> None:
+    """Creates score log header if file does not exist or is empty."""
+    try:
+      with open(self._scores_log_path, 'x', encoding='utf-8') as f:
+        f.write('run_id,timestamp,island_id,from_score,to_score,global_best\n')
+    except FileExistsError:
+      with open(self._scores_log_path, 'r', encoding='utf-8') as f:
+        has_content = bool(f.read(1))
+      if not has_content:
+        with open(self._scores_log_path, 'a', encoding='utf-8') as f:
+          f.write('run_id,timestamp,island_id,from_score,to_score,global_best\n')
+
+  def _initialize_best_programs_log(self, function_to_evolve: str) -> None:
+    """Appends run-start metadata to the best-programs log file."""
+    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+    with open(self._best_programs_log_path, 'a', encoding='utf-8') as f:
+      f.write('\n')
+      f.write(f'=== RUN_START run_id={self._run_id} timestamp={timestamp} ===\n')
+      f.write(f'function_to_evolve={function_to_evolve} num_islands={self._config.num_islands}\n')
+
+  def _format_score_for_csv(self, score: float | None) -> str:
+    """Formats finite scores as numbers and non-finite as empty fields."""
+    if score is None:
+      return ''
+    if np.isfinite(score):
+      return str(score)
+    return ''
+
+  def _append_score_change_log(
+      self,
+      island_id: int,
+      previous_score: float,
+      new_score: float,
+  ) -> None:
+    """Appends one score-change record to the CSV-style score log."""
+    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+    global_best = self.get_global_best_score()
+    with open(self._scores_log_path, 'a', encoding='utf-8') as f:
+      f.write(
+          f'{self._run_id},{timestamp},{island_id},'
+          f'{self._format_score_for_csv(previous_score)},'
+          f'{self._format_score_for_csv(new_score)},'
+          f'{self._format_score_for_csv(global_best)}\n')
+
+  def _append_best_program_log(
+      self,
+      tag: str,
+      island_id: int,
+      score: float,
+      scores_per_test: ScoresPerTest | None,
+      program: code_manipulation.Function | None,
+  ) -> None:
+    """Appends island/global best program details to dedicated txt log."""
+    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+    with open(self._best_programs_log_path, 'a', encoding='utf-8') as f:
+      scores_text = str(scores_per_test) if scores_per_test is not None else '{}'
+      f.write(
+          f'[{timestamp}] {tag} run_id={self._run_id} island={island_id} '
+          f'score={score} scores_per_test={scores_text}\n')
+      f.write('PROGRAM_START\n')
+      f.write(str(program) if program is not None else 'None')
+      f.write('\nPROGRAM_END\n')
+
+  def _log_global_best_if_improved(self) -> None:
+    """Logs global best program snapshot when score is improved."""
+    best_score = self.get_global_best_score()
+    if best_score is None:
+      return
+    if (self._logged_global_best_score is not None
+        and best_score <= self._logged_global_best_score):
+      return
+
+    best_island_id = int(np.argmax(self._best_score_per_island))
+    self._append_best_program_log(
+        tag='GLOBAL_BEST_UPDATE',
+        island_id=best_island_id,
+        score=best_score,
+        scores_per_test=self._best_scores_per_test_per_island[best_island_id],
+        program=self._best_program_per_island[best_island_id],
+    )
+    self._logged_global_best_score = best_score
 
   def get_prompt(self) -> Prompt:
     """Returns a prompt containing implementations from one chosen island."""
     island_id = np.random.randint(len(self._islands))
     code, version_generated = self._islands[island_id].get_prompt()
     return Prompt(code, version_generated, island_id)
+
+  def get_global_best_score(self) -> float | None:
+    """Returns best score across all islands, or `None` if unavailable."""
+    if not self._best_score_per_island:
+      return None
+    best = float(np.max(self._best_score_per_island))
+    if not np.isfinite(best):
+      return None
+    return best
 
   def _register_program_in_island(
       self,
@@ -114,6 +213,7 @@ class ProgramsDatabase:
       scores_per_test: ScoresPerTest,
   ) -> None:
     """Registers `program` in the specified island."""
+    previous_score = self._best_score_per_island[island_id]
     self._islands[island_id].register_program(program, scores_per_test)
     score = _reduce_score(scores_per_test)
     if score > self._best_score_per_island[island_id]:
@@ -121,6 +221,15 @@ class ProgramsDatabase:
       self._best_scores_per_test_per_island[island_id] = scores_per_test
       self._best_score_per_island[island_id] = score
       logging.info('Best score of island %d increased to %s', island_id, score)
+      self._append_score_change_log(island_id, previous_score, score)
+      self._append_best_program_log(
+          tag='ISLAND_BEST_UPDATE',
+          island_id=island_id,
+          score=score,
+          scores_per_test=scores_per_test,
+          program=program,
+      )
+      self._log_global_best_if_improved()
 
   def register_program(
       self,

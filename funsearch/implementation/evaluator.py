@@ -17,6 +17,7 @@
 import ast
 from collections.abc import Sequence
 import copy
+import math
 import signal
 from typing import Any
 
@@ -28,6 +29,91 @@ import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_markdown_code_fences(code: str) -> str:
+  """Removes markdown code-fence lines from generated snippets."""
+  cleaned_lines = []
+  for line in code.splitlines():
+    if line.strip().startswith('```'):
+      continue
+    cleaned_lines.append(line)
+  return '\n'.join(cleaned_lines).strip('\n')
+
+
+def _normalize_body_indentation(body: str) -> str:
+  """Normalizes function-body indentation to a 2-space baseline."""
+  lines = body.splitlines()
+  non_empty_lines = [line for line in lines if line.strip()]
+  if not non_empty_lines:
+    return '\n\n'
+
+  min_indent = min(len(line) - len(line.lstrip(' ')) for line in non_empty_lines)
+  normalized_lines = []
+  for line in lines:
+    if line.strip():
+      dedented = line[min_indent:] if len(line) >= min_indent else line.lstrip(' ')
+      normalized_lines.append(f'  {dedented}')
+    else:
+      normalized_lines.append('')
+  return '\n'.join(normalized_lines) + '\n\n'
+
+
+def _extract_body_from_top_level_function(code: str) -> str | None:
+  """Returns body of the first top-level function in `code`, if any."""
+  try:
+    tree = ast.parse(code)
+  except SyntaxError:
+    return None
+
+  for node in tree.body:
+    if isinstance(node, ast.FunctionDef):
+      if not node.body:
+        return ''
+      lines = code.splitlines()
+      body_start_line = node.body[0].lineno - 1
+      body_lines = lines[body_start_line:node.end_lineno]
+      return _normalize_body_indentation('\n'.join(body_lines))
+  return None
+
+
+def _indent_code_block(code: str) -> str:
+  """Indents every non-empty line by 2 spaces."""
+  indented_lines = []
+  for line in code.splitlines():
+    if line.strip():
+      indented_lines.append(f'  {line}')
+    else:
+      indented_lines.append(line)
+  return '\n'.join(indented_lines)
+
+
+def _trim_wrapped_body(code_body: str) -> str:
+  """Tries to parse body by wrapping it into a fake function."""
+  code = f'def fake_function_header():\n{code_body}'
+  tree = None
+  # We keep trying and deleting code from the end until the parser succeeds.
+  while tree is None and code:
+    try:
+      tree = ast.parse(code)
+    except SyntaxError as e:
+      if e.lineno is None or e.lineno <= 1:
+        code = ''
+        break
+      next_code = '\n'.join(code.splitlines()[:e.lineno - 1])
+      if next_code == code:
+        code = ''
+        break
+      code = next_code
+  if not code:
+    # Nothing could be saved from `generated_code`
+    return ''
+  assert tree is not None
+
+  visitor = _FunctionLineVisitor('fake_function_header')
+  visitor.visit(tree)
+  body_lines = code.splitlines()[1:visitor.function_end_line]
+  return _normalize_body_indentation('\n'.join(body_lines))
 
 class _FunctionLineVisitor(ast.NodeVisitor):
   """Visitor that finds the last line number of a function with a given name."""
@@ -53,22 +139,24 @@ def _trim_function_body(generated_code: str) -> str:
   """Extracts the body of the generated function, trimming anything after it."""
   if not generated_code:
     return ''
-  code = f'def fake_function_header():\n{generated_code}'
-  tree = None
-  # We keep trying and deleting code from the end until the parser succeeds.
-  while tree is None:
-    try:
-      tree = ast.parse(code)
-    except SyntaxError as e:
-      code = '\n'.join(code.splitlines()[:e.lineno - 1])
-  if not code:
-    # Nothing could be saved from `generated_code`
+
+  cleaned_code = _strip_markdown_code_fences(generated_code)
+  if not cleaned_code:
     return ''
 
-  visitor = _FunctionLineVisitor('fake_function_header')
-  visitor.visit(tree)
-  body_lines = code.splitlines()[1:visitor.function_end_line]
-  return '\n'.join(body_lines) + '\n\n'
+  # Some models return a complete function definition rather than only the
+  # function body. Handle that case directly.
+  function_body = _extract_body_from_top_level_function(cleaned_code)
+  if function_body is not None:
+    return function_body
+
+  trimmed = _trim_wrapped_body(cleaned_code)
+  if trimmed:
+    return trimmed
+
+  # If model output is valid code body but not indented yet, try once with
+  # normalization for function-body indentation.
+  return _trim_wrapped_body(_indent_code_block(cleaned_code))
 
 
 def _sample_to_program(
@@ -100,8 +188,8 @@ class Sandbox:
       function_to_run: str,
       test_input: str,
       timeout_seconds: int,
-  ) -> tuple[Any, bool]:
-    """Returns `function_to_run(test_input)` and whether execution succeeded."""
+  ) -> tuple[Any, bool, str | None]:
+    """Returns result, whether execution succeeded and failure type."""
     namespace: dict[str, Any] = {}
 
     class _TimeoutError(Exception):
@@ -119,12 +207,19 @@ class Sandbox:
       exec(program, namespace)  # pylint: disable=exec-used
       function = namespace.get(function_to_run)
       if not callable(function):
-        return None, False
+        logger.error(
+            'Sandbox failure: function `%s` is not callable after exec.',
+            function_to_run)
+        return None, False, 'FunctionNotCallable'
 
       result = function(test_input)
-      return result, True
-    except Exception:
-      return None, False
+      return result, True, None
+    except Exception as e:
+      logger.exception(
+          'Sandbox exception while running `%s` on input type `%s`.',
+          function_to_run,
+          type(test_input).__name__)
+      return None, False, type(e).__name__
     finally:
       signal.alarm(0)
       signal.signal(signal.SIGALRM, previous_handler)
@@ -171,18 +266,38 @@ class Evaluator:
     """Compiles the sample into a program and executes it on test inputs."""
     new_function, program = _sample_to_program(
         sample, version_generated, self._template, self._function_to_evolve)
+    if not new_function.body.strip():
+      logger.info('Discarded sample: empty evolved function body after trim.')
+      return
+
+    calls_ancestor = _calls_ancestor(program, self._function_to_evolve)
+    if calls_ancestor:
+      logger.info('Discarded sample: generated code calls an ancestor function.')
+      return
 
     scores_per_test = {}
     for current_input in self._inputs:
       logger.info("Starting run the code")
-      test_output, runs_ok = self._sandbox.run(
+      test_output, runs_ok, error_type = self._sandbox.run(
           program, self._function_to_run, current_input, self._timeout_seconds)
-      if (runs_ok and not _calls_ancestor(program, self._function_to_evolve)
-          and test_output is not None):
+      if runs_ok and test_output is not None:
         if not isinstance(test_output, (int, float)):
           raise ValueError('@function.run did not return an int/float score.')
+        if not math.isfinite(float(test_output)):
+          logger.info(
+              'Run failed: function returned non-finite score %s.', test_output)
+          logger.info("Finished running the code")
+          continue
         logger.info("Code ran successfully, score: %s", test_output)
         scores_per_test[json.dumps(current_input)] = test_output
+      elif not runs_ok:
+        logger.info(
+            'Run failed: sandbox execution returned runs_ok=False, error_type=%s.',
+            error_type or 'UnknownError')
+      else:
+        logger.info('Run failed: function returned None.')
       logger.info("Finished running the code")
     if scores_per_test:
       self._database.register_program(new_function, island_id, scores_per_test)
+    else:
+      logger.info('Discarded sample: no valid scores were produced for any input.')

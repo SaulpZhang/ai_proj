@@ -85,6 +85,62 @@ def new_f():'''
     actual = evaluator._trim_function_body(code)
     self.assertEqual(actual, code)
 
+  def test_trim_function_body_full_function(self):
+    code = textwrap.dedent(
+        '''\
+        def priority_v2(item, bins):
+          score = bins - item
+          return score
+        '''
+    )
+    desired = textwrap.dedent(
+        '''\
+          score = bins - item
+          return score
+
+        '''
+    )
+    actual = evaluator._trim_function_body(code)
+    self.assertEqual(desired, actual)
+
+  def test_trim_function_body_markdown_fence(self):
+    code = textwrap.dedent(
+        '''\
+        ```python
+          return bins - item
+        ```
+        '''
+    )
+    desired = '  return bins - item\n\n'
+    actual = evaluator._trim_function_body(code)
+    self.assertEqual(desired, actual)
+
+  def test_trim_function_body_unindented(self):
+    code = 'return bins - item\n'
+    desired = '  return bins - item\n\n'
+    actual = evaluator._trim_function_body(code)
+    self.assertEqual(desired, actual)
+
+  def test_trim_function_body_full_function_four_space_indent(self):
+    code = textwrap.dedent(
+        '''\
+        def priority_v2(item, bins):
+            """Improved version of priority_v0."""
+            score = bins - item
+            return score
+        '''
+    )
+    desired = textwrap.dedent(
+        '''\
+          """Improved version of priority_v0."""
+          score = bins - item
+          return score
+
+        '''
+    )
+    actual = evaluator._trim_function_body(code)
+    self.assertEqual(desired, actual)
+
 
 if __name__ == '__main__':
   absltest.main()
