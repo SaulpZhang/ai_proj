@@ -1,0 +1,5 @@
+absl_py==2.0.0
+numpy==2.4.3
+openai==2.30.0
+scipy==1.17.1
+wandb==0.25.1
