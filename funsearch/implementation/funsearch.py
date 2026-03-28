@@ -15,6 +15,7 @@
 
 """A single-threaded implementation of the FunSearch pipeline."""
 from collections.abc import Sequence
+import threading
 from typing import Any
 
 from funsearch.implementation import code_manipulation
@@ -57,12 +58,21 @@ def main(specification: str, inputs: Sequence[Any], config: config_lib.Config):
   # We send the initial implementation to be analysed by one of the evaluators.
   initial = template.get_function(function_to_evolve).body
   evaluators[0].analyse(initial, island_id=None, version_generated=None)
+  database.wait_for_pending_registrations()
 
   samplers = [sampler.Sampler(database, evaluators, config.samples_per_prompt)
               for _ in range(config.num_samplers)]
 
-  # This loop can be executed in parallel on remote sampler machines. As each
-  # sampler enters an infinite loop, without parallelization only the first
-  # sampler will do any work.
-  for s in samplers:
-    s.sample()
+  # Each sampler runs forever, so start one thread per sampler and wait.
+  sampler_threads = []
+  for i, current_sampler in enumerate(samplers):
+    thread = threading.Thread(
+        target=current_sampler.sample,
+        name=f'sampler-{i}',
+        daemon=False,
+    )
+    thread.start()
+    sampler_threads.append(thread)
+
+  for thread in sampler_threads:
+    thread.join()

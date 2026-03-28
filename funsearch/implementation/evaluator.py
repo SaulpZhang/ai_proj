@@ -17,7 +17,8 @@
 import ast
 from collections.abc import Sequence
 import copy
-import signal
+import multiprocessing as mp
+import queue
 from typing import Any
 
 from funsearch.implementation import code_manipulation
@@ -28,6 +29,27 @@ import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _sandbox_worker(
+    program: str,
+    function_to_run: str,
+    test_input: Any,
+    result_queue: mp.Queue,
+) -> None:
+  """Executes generated code in an isolated process and returns the result."""
+  namespace: dict[str, Any] = {}
+  try:
+    exec(program, namespace)  # pylint: disable=exec-used
+    function = namespace.get(function_to_run)
+    if not callable(function):
+      result_queue.put((False, None))
+      return
+
+    result = function(test_input)
+    result_queue.put((True, result))
+  except Exception:
+    result_queue.put((False, None))
 
 class _FunctionLineVisitor(ast.NodeVisitor):
   """Visitor that finds the last line number of a function with a given name."""
@@ -102,32 +124,28 @@ class Sandbox:
       timeout_seconds: int,
   ) -> tuple[Any, bool]:
     """Returns `function_to_run(test_input)` and whether execution succeeded."""
-    namespace: dict[str, Any] = {}
+    ctx = mp.get_context('spawn')
+    result_queue: mp.Queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(
+        target=_sandbox_worker,
+        args=(program, function_to_run, test_input, result_queue),
+    )
+    process.start()
+    process.join(timeout_seconds)
 
-    class _TimeoutError(Exception):
-      pass
-
-    def _timeout_handler(signum: int, frame: Any) -> None:
-      del signum, frame
-      raise _TimeoutError()
-
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    try:
-      signal.signal(signal.SIGALRM, _timeout_handler)
-      signal.alarm(timeout_seconds)
-
-      exec(program, namespace)  # pylint: disable=exec-used
-      function = namespace.get(function_to_run)
-      if not callable(function):
-        return None, False
-
-      result = function(test_input)
-      return result, True
-    except Exception:
+    if process.is_alive():
+      process.terminate()
+      process.join()
       return None, False
-    finally:
-      signal.alarm(0)
-      signal.signal(signal.SIGALRM, previous_handler)
+
+    try:
+      runs_ok, result = result_queue.get_nowait()
+    except queue.Empty:
+      return None, False
+
+    if not runs_ok:
+      return None, False
+    return result, True
 
 
 def _calls_ancestor(program: str, function_to_evolve: str) -> bool:
@@ -185,4 +203,5 @@ class Evaluator:
         scores_per_test[json.dumps(current_input)] = test_output
       logger.info("Finished running the code")
     if scores_per_test:
-      self._database.register_program(new_function, island_id, scores_per_test)
+      self._database.register_program_async(
+          new_function, island_id, scores_per_test)

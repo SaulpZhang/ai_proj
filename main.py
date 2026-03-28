@@ -3,7 +3,9 @@ from funsearch.implementation import funsearch
 import dataset
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [thread:%(threadName)s/%(thread)d] - %(message)s')
 
 
 if __name__ == "__main__":

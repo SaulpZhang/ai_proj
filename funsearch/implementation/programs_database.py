@@ -17,6 +17,8 @@
 from collections.abc import Mapping, Sequence
 import copy
 import dataclasses
+import queue
+import threading
 import time
 from typing import Any
 
@@ -29,6 +31,7 @@ from funsearch.implementation import config as config_lib
 
 Signature = tuple[float, ...]
 ScoresPerTest = Mapping[Any, float]
+_PendingProgram = tuple[code_manipulation.Function, int | None, ScoresPerTest]
 
 
 def _softmax(logits: np.ndarray, temperature: float) -> np.ndarray:
@@ -98,14 +101,59 @@ class ProgramsDatabase:
         [None] * config.num_islands)
     self._best_scores_per_test_per_island: list[ScoresPerTest | None] = (
         [None] * config.num_islands)
+    self._lock = threading.RLock()
+    self._pending_programs: queue.Queue[_PendingProgram] = queue.Queue(
+        maxsize=1024)
+    self._stop_register_worker = threading.Event()
+    self._register_worker = threading.Thread(
+        target=self._register_program_worker,
+        name='program-register-worker',
+        daemon=True,
+    )
+    self._register_worker.start()
 
     self._last_reset_time: float = time.time()
 
+  def _register_program_worker(self) -> None:
+    """Consumes queued program updates and applies them serially."""
+    while not self._stop_register_worker.is_set():
+      try:
+        program, island_id, scores_per_test = self._pending_programs.get(
+            timeout=0.2)
+      except queue.Empty:
+        continue
+
+      try:
+        self.register_program(program, island_id, scores_per_test)
+      except Exception:  # Defensive: keep worker alive on bad samples.
+        logging.exception('Failed to register async program update.')
+      finally:
+        self._pending_programs.task_done()
+
+  def register_program_async(
+      self,
+      program: code_manipulation.Function,
+      island_id: int | None,
+      scores_per_test: ScoresPerTest,
+  ) -> None:
+    """Queues `program` for background registration."""
+    self._pending_programs.put((program, island_id, scores_per_test))
+
+  def wait_for_pending_registrations(self) -> None:
+    """Blocks until all queued async registrations are applied."""
+    self._pending_programs.join()
+
+  def shutdown(self) -> None:
+    """Stops the background registration worker."""
+    self._stop_register_worker.set()
+    self._register_worker.join(timeout=1.0)
+
   def get_prompt(self) -> Prompt:
     """Returns a prompt containing implementations from one chosen island."""
-    island_id = np.random.randint(len(self._islands))
-    code, version_generated = self._islands[island_id].get_prompt()
-    return Prompt(code, version_generated, island_id)
+    with self._lock:
+      island_id = np.random.randint(len(self._islands))
+      code, version_generated = self._islands[island_id].get_prompt()
+      return Prompt(code, version_generated, island_id)
 
   def _register_program_in_island(
       self,
@@ -129,20 +177,21 @@ class ProgramsDatabase:
       scores_per_test: ScoresPerTest,
   ) -> None:
     """Registers `program` in the database."""
-    # In an asynchronous implementation we should consider the possibility of
-    # registering a program on an island that had been reset after the prompt
-    # was generated. Leaving that out here for simplicity.
-    if island_id is None:
-      # This is a program added at the beginning, so adding it to all islands.
-      for island_id in range(len(self._islands)):
+    with self._lock:
+      # In an asynchronous implementation we should consider the possibility of
+      # registering a program on an island that had been reset after the prompt
+      # was generated. Leaving that out here for simplicity.
+      if island_id is None:
+        # This is a program added at the beginning, so adding it to all islands.
+        for island_id in range(len(self._islands)):
+          self._register_program_in_island(program, island_id, scores_per_test)
+      else:
         self._register_program_in_island(program, island_id, scores_per_test)
-    else:
-      self._register_program_in_island(program, island_id, scores_per_test)
 
-    # Check whether it is time to reset an island.
-    if (time.time() - self._last_reset_time > self._config.reset_period):
-      self._last_reset_time = time.time()
-      self.reset_islands()
+      # Check whether it is time to reset an island.
+      if (time.time() - self._last_reset_time > self._config.reset_period):
+        self._last_reset_time = time.time()
+        self.reset_islands()
 
   def reset_islands(self) -> None:
     """Resets the weaker half of islands."""
